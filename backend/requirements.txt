@@ -1,3 +1,0 @@
-numpy==1.26.1
-ultralytics==8.2.48
-opencv-python-headless==4.10.0.84
