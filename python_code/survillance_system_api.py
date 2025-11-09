@@ -3,6 +3,7 @@ import cv2
 import os
 import json
 import time
+import socket
 from datetime import datetime
 from threading import Thread, Lock
 from flask import Flask, Response, jsonify
@@ -50,6 +51,18 @@ cap = None
 # -----------------------------
 # 🗂️ Helper Functions
 # -----------------------------
+def get_ip():
+    """Get local IP address dynamically."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
 def get_output_path():
     """Creates timestamped directories for recordings."""
     base_dir = os.path.expanduser("~/YOLO_Recordings")
@@ -160,7 +173,7 @@ def camera_capture():
                 if frame is None:
                     continue
 
-                # 🩵 FIX: Convert BGRA (4 channels) → BGR (3 channels)
+                # ✅ Convert BGRA → BGR for YOLO
                 if frame.shape[2] == 4:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
@@ -173,21 +186,24 @@ def camera_capture():
                 results = fire_model.predict(frame, verbose=False)
                 annotated = frame.copy()
 
+                # ✅ Draw proper detection boxes
                 for r in results:
                     for box in r.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         conf = float(box.conf[0])
                         label = "Fire"
-                        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.putText(annotated, f"{label} {conf:.2f}", (x1, y1 - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                        color = (0, 0, 255) if conf > 0.5 else (0, 255, 255)
+                        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(annotated, f"{label} {conf:.2f}",
+                                    (x1, max(20, y1 - 10)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                         if conf > 0.5:
                             log_detection(label, conf)
 
                 video_writer.write(annotated)
                 with frame_lock:
                     global_frame = annotated
-                time.sleep(0.1)
+                time.sleep(0.05)
 
         except Exception as e:
             print(f"❌ Picamera2 error: {e} — switching to OpenCV...")
@@ -230,16 +246,18 @@ def start_opencv_camera():
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = float(box.conf[0])
                 label = "Fire"
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(annotated, f"{label} {conf:.2f}", (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                color = (0, 0, 255) if conf > 0.5 else (0, 255, 255)
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(annotated, f"{label} {conf:.2f}",
+                            (x1, max(20, y1 - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 if conf > 0.5:
                     log_detection(label, conf)
 
         video_writer.write(annotated)
         with frame_lock:
             global_frame = annotated
-        time.sleep(0.1)
+        time.sleep(0.05)
 
 
 # -----------------------------
@@ -258,7 +276,7 @@ def generate_frames():
 
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        time.sleep(0.1)
+        time.sleep(0.05)
 
 
 @app.route("/video_feed")
@@ -283,12 +301,17 @@ if __name__ == "__main__":
     cam_thread = Thread(target=camera_capture, daemon=True)
     cam_thread.start()
 
-    print("✅ Flask app running locally at http://0.0.0.0:5000")
+    local_ip = get_ip()
+    print(f"✅ Flask app running locally at:")
+    print(f"   • http://127.0.0.1:5000")
+    print(f"   • http://{local_ip}:5000")
+    print(f"🎥 Video Stream: http://{local_ip}:5000/video_feed")
+
     try:
         print("🚀 Starting Cloudflare Tunnel...")
         try:
             # tunnel = open_tunnel(port=5000)
-            print(f"🌍 Public Tunnel URL: ")
+            print("🌍 Public Tunnel URL: ")
         except Exception as e:
             print(f"❌ Cloudflare Tunnel failed: {e}")
 
