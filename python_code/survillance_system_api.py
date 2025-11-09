@@ -148,9 +148,13 @@ def camera_capture():
     if PICAMERA_AVAILABLE:
         print("📸 Using PiCamera2...")
         picam2 = Picamera2()
-        config = picam2.create_preview_configuration(main={"size": (frame_width, frame_height), "format": "XBGR8888"})
+        config = picam2.create_preview_configuration(main={"size": (frame_width, frame_height), "format": "RGB888"})
         picam2.configure(config)
         picam2.start()
+
+        frame = picam2.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
         time.sleep(2)
 
         while True:
