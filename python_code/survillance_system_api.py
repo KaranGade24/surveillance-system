@@ -1,3 +1,4 @@
+print("Starting imports...")
 import cv2
 import os
 import json
@@ -6,21 +7,22 @@ import socket
 import numpy as np
 from datetime import datetime
 from threading import Thread, Lock
-from flask import Flask, Response, jsonify, send_file, request
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from ultralytics import YOLO
 import signal
 import sys
 
-# -----------------------------
-# Config
-# -----------------------------
-FRAME_WIDTH, FRAME_HEIGHT = 320, 240        # Streaming resolution
-VIDEO_WIDTH, VIDEO_HEIGHT = 640, 480       # Video storage resolution
-FPS = 10                                   # Video FPS
-DETECT_EVERY_N_FRAMES = 3                  # YOLO inference frequency
+print("✅ Imports completed.")
 
+# -----------------------------
+# Configuration
+# -----------------------------
+FRAME_WIDTH, FRAME_HEIGHT = 320, 240      # For streaming
+VIDEO_WIDTH, VIDEO_HEIGHT = 640, 480     # For video recording
+FPS = 10
+DETECT_EVERY_N_FRAMES = 3                # YOLO inference every N frames
 BASE_RECORD_DIR = os.path.expanduser("~/Recordings")
 
 # -----------------------------
@@ -31,7 +33,7 @@ CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # -----------------------------
-# Global state
+# Global variables
 # -----------------------------
 frame_lock = Lock()
 global_frame = None
@@ -44,13 +46,26 @@ cap = None
 # -----------------------------
 # Load YOLO model
 # -----------------------------
+print("Loading YOLO fire detection model...")
 fire_model = YOLO("fire_detector.pt")
-print("✅ YOLO model loaded.")
+print("✅ YOLO model loaded successfully.")
 
 # -----------------------------
-# Helpers
+# Helper Functions
 # -----------------------------
+def get_ip():
+    """Get local IP of Raspberry Pi / system."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
 def get_output_path():
+    """Return path for current date/hour recordings."""
     now = datetime.now()
     date_folder = now.strftime("%Y-%m-%d")
     date_path = os.path.join(BASE_RECORD_DIR, date_folder)
@@ -63,15 +78,17 @@ def get_output_path():
     return hour_path
 
 def init_video_writer():
+    """Initialize high-res video writer."""
     global video_writer, current_video_path, current_folder
     current_folder = get_output_path()
     filename = f"record_{datetime.now().strftime('%H-%M-%S')}.mp4"
     current_video_path = os.path.join(current_folder, filename)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(current_video_path, fourcc, FPS, (VIDEO_WIDTH, VIDEO_HEIGHT))
-    print(f"🎥 Recording: {current_video_path}")
+    print(f"🎥 Recording video to: {current_video_path}")
 
 def save_detection(label, conf):
+    """Save detection in memory, JSON, and emit via SocketIO."""
     global detections_data
     ts = datetime.now()
     data = {
@@ -83,25 +100,27 @@ def save_detection(label, conf):
     }
     detections_data.append(data)
     socketio.emit("new_detection", data)
-    # save JSON line
     log_path = os.path.join(current_folder, "detections.json")
     with open(log_path, "a") as f:
         json.dump(data, f)
         f.write("\n")
+    print(f"🔔 Detection: {label} {conf:.2f} at {ts.strftime('%H:%M:%S')}")
 
 def handle_exit(sig, frame):
+    """Cleanup on exit."""
     global cap, video_writer
-    print("[INFO] Exiting...")
+    print("\n[INFO] Exiting... Cleaning up...")
     if video_writer: video_writer.release()
     if cap: cap.release()
     cv2.destroyAllWindows()
     sys.exit(0)
 
 # -----------------------------
-# Camera capture + detection thread
+# Camera Capture + Detection
 # -----------------------------
 def camera_capture():
     global global_frame, video_writer, cap
+    print("🎬 Starting camera capture...")
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT)
@@ -117,15 +136,11 @@ def camera_capture():
             continue
 
         frame_count += 1
-
-        # Resize for streaming
         stream_frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-
-        # Annotated frame (copy)
         annotated = frame.copy()
 
         # -------------------
-        # Fire detection (every N frames)
+        # Fire detection every N frames
         # -------------------
         if frame_count % DETECT_EVERY_N_FRAMES == 0:
             results = fire_model.predict(frame, stream=True, verbose=False)
@@ -141,7 +156,7 @@ def camera_capture():
                         save_detection(label, conf)
 
         # -------------------
-        # Save video frame
+        # Write video frame
         # -------------------
         if video_writer:
             try:
@@ -163,10 +178,12 @@ def camera_capture():
             last_hour = now.hour
 
 # -----------------------------
-# Flask streaming endpoint
+# Flask Streaming Endpoint
 # -----------------------------
 @app.route("/video_feed")
 def video_feed():
+    ip = get_ip()
+    print(f"🌐 Access live stream at: http://{ip}:5000/video_feed")
     def generate_frames():
         global global_frame
         while True:
@@ -180,14 +197,14 @@ def video_feed():
     return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 # -----------------------------
-# Detections endpoint
+# Detections Endpoint
 # -----------------------------
 @app.route("/detections")
 def get_detections():
     return jsonify(list(reversed(detections_data[-100:])))
 
 # -----------------------------
-# List recordings
+# Recordings List Endpoint
 # -----------------------------
 @app.route("/recordings")
 def list_recordings():
@@ -213,7 +230,7 @@ def list_recordings():
     return jsonify(tree)
 
 # -----------------------------
-# Serve recordings (Range header support)
+# Serve Recording Files (with Range support)
 # -----------------------------
 @app.route("/recording/<path:filename>")
 def serve_recording(filename):
@@ -238,11 +255,16 @@ def serve_recording(filename):
     return rv
 
 # -----------------------------
-# Main entry
+# Main Entry
 # -----------------------------
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
+
     cam_thread = Thread(target=camera_capture, daemon=True)
     cam_thread.start()
+
+    ip = get_ip()
+    print(f"✅ Server running. Access live feed at: http://{ip}:5000/video_feed")
     socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
+print("✅ Surveillance System API started.")
