@@ -234,10 +234,15 @@ def process_frame(frame, last_hour):
     
     # CRITICAL FIX: Return the potentially updated last_hour
     return annotated, last_hour
-    
+
 # -----------------------------
 # Flask Streaming
 # -----------------------------
+
+# -----------------------------
+# Flask Streaming (CORRECTED)
+# -----------------------------
+
 @app.route("/video_feed")
 def video_feed():
     def generate_frames():
@@ -245,10 +250,22 @@ def video_feed():
         while True:
             with frame_lock:
                 if global_frame is None:
+                    # FIX: Wait briefly if the frame hasn't been initialized yet
+                    time.sleep(0.1) 
                     continue
+                
+                # The critical fix you need is to ensure global_frame is a valid image.
+                # If we've passed the 'is None' check, it should be an image.
+                # The logic below is correct for encoding a valid frame.
                 ret, buffer = cv2.imencode(".jpg", global_frame)
-                frame_bytes = buffer.tobytes()
+                
+            # If imencode failed for some other reason (e.g., buffer is empty), skip.
+            if not ret:
+                continue
+                
+            frame_bytes = buffer.tobytes()
             yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+
     return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 @app.route("/detections")
