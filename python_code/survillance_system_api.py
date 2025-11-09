@@ -467,7 +467,7 @@ from ultralytics import YOLO
 import signal
 import sys
 from flask_socketio import SocketIO
-from cloudflare import start_cloudflare_background
+from pycloudflared import start_cloudflare_tunnel # CHANGED: Correct import for pycloudflared
 import mimetypes
 
 print("Imports completed.")
@@ -499,7 +499,7 @@ cap = None
 # -----------------------------
 def get_output_path():
     """Create and return the correct output folder path (daily/hourly)."""
-    base_dir = "/home/pi/YOLO_Recordings"
+    base_dir = os.path.expanduser("~/YOLO_Recordings") # CHANGED: Use current user's home dir
     now = datetime.now()
 
     # Daily folder
@@ -578,7 +578,7 @@ def log_detection(label, conf):
 
 def cleanup_old(days=7):
     """Optional: remove recordings older than N days."""
-    base_dir = "/home/pi/YOLO_Recordings"
+    base_dir = os.path.expanduser("~/YOLO_Recordings") # CHANGED: Use current user's home dir
     if not os.path.exists(base_dir):
         return
     now = datetime.now()
@@ -794,7 +794,7 @@ def play_video():
 
 @app.route("/recordings")
 def list_recordings():
-    base_dir = "/home/pi/YOLO_Recordings"
+    base_dir = os.path.expanduser("~/YOLO_Recordings") # CHANGED: Use current user's home dir
     tree = []
     if not os.path.exists(base_dir):
         return jsonify(tree)
@@ -844,7 +844,7 @@ def list_recordings():
 @app.route("/recording/<path:filename>")
 def static_recordings(filename):
     """Stream any video file (supports byte-range requests)."""
-    base_dir = "/home/pi/YOLO_Recordings"
+    base_dir = os.path.expanduser("~/YOLO_Recordings") # CHANGED: Use current user's home dir
     full_path = os.path.join(base_dir, filename)
 
     if not os.path.exists(full_path):
@@ -910,8 +910,9 @@ if __name__ == "__main__":
     print("✅ Flask app running at http://0.0.0.0:5000")
     try:
         # Start Cloudflare tunnel
-        # Make sure you have `pip install flask-cloudflared`
-        start_cloudflare_background(port=5000, autorest=True)
+        # This requires the 'cloudflared' executable to be installed on the system
+        print("🚀 Starting Cloudflare Tunnel... Please wait.")
+        start_cloudflare_tunnel(5000) # CHANGED: Correct function call
         
         # Use socketio.run for proper websocket support
         socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
