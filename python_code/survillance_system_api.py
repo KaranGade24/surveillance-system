@@ -37,7 +37,7 @@ global_frame = None
 video_writer = None
 current_video_path = None
 current_folder = None
-frame_width, frame_height = 720, 480
+frame_width, frame_height = 1280, 720  # Increased frame size
 cap = None
 
 # -----------------------------
