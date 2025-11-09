@@ -199,18 +199,26 @@ def camera_capture():
 # -----------------------------
 # Frame processing
 # -----------------------------
+
+# -----------------------------
+# Frame processing (CORRECTED)
+# -----------------------------
 def process_frame(frame, last_hour):
     global video_writer
     now = datetime.now()
+    
+    # Check for hour change
     if now.hour != last_hour:
         if video_writer:
             video_writer.release()
         init_video_writer()
-        last_hour = now.hour
+        # CRITICAL FIX: Update the hour
+        last_hour = now.hour 
 
     results = fire_model.predict(frame, verbose=False)
     annotated = frame.copy()
 
+    # ... (rest of the detection/drawing logic remains the same) ...
     for r in results:
         if not hasattr(r, "boxes") or len(r.boxes) == 0:
             continue
@@ -223,8 +231,10 @@ def process_frame(frame, last_hour):
 
     if video_writer:
         video_writer.write(cv2.resize(annotated, (frame_width, frame_height)))
-    return annotated
-
+    
+    # CRITICAL FIX: Return the potentially updated last_hour
+    return annotated, last_hour
+    
 # -----------------------------
 # Flask Streaming
 # -----------------------------
