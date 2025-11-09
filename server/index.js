@@ -1,95 +1,66 @@
-const ioClient = require("socket.io-client");
-const Jimp = require("jimp");
-const ort = require("onnxruntime-node");
 const express = require("express");
-const { Readable } = require("stream");
+const axios = require("axios");
+const Jimp = require("jimp");
 
 const app = express();
 const PORT = 5001;
-const FLASK_SOCKET = "http://192.168.43.108:5000";
+
+// Flask MJPEG feed
+const FLASK_FEED = "http://192.168.43.108:5000/video_feed";
 
 // Globals
 let globalFrame = null;
-let session;
+const FRAME_WIDTH = 640;
+const FRAME_HEIGHT = 480;
 
 // -----------------------------
-// Load ONNX Fire Detection model
+// Fetch MJPEG frames from Flask
 // -----------------------------
-async function loadModel() {
-  try {
-    session = await ort.InferenceSession.create("./firedetect8n.onnx");
-    console.log("✅ Fire Detection ONNX model loaded!");
-  } catch (err) {
-    console.error("❌ Failed to load ONNX model:", err);
-  }
+function fetchFlaskFrames() {
+  console.log(`Connecting to Flask MJPEG feed: ${FLASK_FEED}`);
+
+  axios
+    .get(FLASK_FEED, { responseType: "stream" })
+    .then((res) => {
+      console.log("✅ Connected to Flask MJPEG feed.", res.status);
+
+      let mjpegBuffer = Buffer.alloc(0);
+
+      res.data.on("data", async (chunk) => {
+        mjpegBuffer = Buffer.concat([mjpegBuffer, chunk]);
+
+        let start = mjpegBuffer.indexOf(Buffer.from([0xff, 0xd8])); // JPEG SOI
+        let end = mjpegBuffer.indexOf(Buffer.from([0xff, 0xd9]));   // JPEG EOI
+
+        while (start !== -1 && end !== -1) {
+          const jpgBuffer = mjpegBuffer.slice(start, end + 2);
+          mjpegBuffer = mjpegBuffer.slice(end + 2);
+
+          try {
+            const img = await Jimp.read(jpgBuffer);
+            img.resize(FRAME_WIDTH, FRAME_HEIGHT);
+
+            // For now, just store the JPEG buffer (future: run fire detection here)
+            globalFrame = await img.getBufferAsync(Jimp.MIME_JPEG);
+          } catch (err) {
+            console.error("❌ Jimp read error:", err.message);
+          }
+
+          start = mjpegBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+          end = mjpegBuffer.indexOf(Buffer.from([0xff, 0xd9]));
+        }
+      });
+
+      res.data.on("end", () => console.log("❌ Flask MJPEG stream ended."));
+      res.data.on("error", (err) =>
+        console.error("❌ Flask stream error:", err.message)
+      );
+    })
+    .catch((err) => console.error("❌ Error connecting to Flask MJPEG:", err.message));
 }
 
 // -----------------------------
-// Fire detection function
-// -----------------------------
-async function detectFire(jimpImg) {
-  if (!session) return jimpImg;
-
-  const buffer = await jimpImg.getBufferAsync(Jimp.MIME_JPEG);
-  const img = await Jimp.read(buffer);
-  img.resize(640, 480); // Resize for model if needed
-
-  // Convert image to CHW float32 array
-  const tensorData = new Float32Array(3 * img.bitmap.height * img.bitmap.width);
-  let idx = 0;
-  img.scan(0, 0, img.bitmap.width, img.bitmap.height, function (x, y, offset) {
-    tensorData[idx++] = this.bitmap.data[offset] / 255; // R
-    tensorData[idx++] = this.bitmap.data[offset + 1] / 255; // G
-    tensorData[idx++] = this.bitmap.data[offset + 2] / 255; // B
-  });
-
-  const tensor = new ort.Tensor("float32", tensorData, [
-    1,
-    3,
-    img.bitmap.height,
-    img.bitmap.width,
-  ]);
-  const feeds = { images: tensor }; // adjust input name as needed
-
-  try {
-    const results = await session.run(feeds);
-    // TODO: parse results to get bounding boxes
-    // For demo, just annotate "Fire Detection" text
-    img.print(
-      await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK),
-      10,
-      10,
-      "🔥 Fire Detection"
-    );
-  } catch (err) {
-    console.error("Error running ONNX model:", err);
-  }
-
-  return img;
-}
-
-// -----------------------------
-// Connect to Flask Socket.IO
-// -----------------------------
-const socket = ioClient(FLASK_SOCKET);
-
-socket.on("connect", () => console.log("✅ Connected to Flask Socket.IO"));
-
-socket.on("frame", async (data) => {
-  try {
-    const imgBuffer = Buffer.from(data.image, "base64");
-    let img = await Jimp.read(imgBuffer);
-
-    img = await detectFire(img); // run fire detection
-
-    globalFrame = await img.getBufferAsync(Jimp.MIME_JPEG);
-  } catch (err) {
-    console.error("❌ Error processing frame:", err);
-  }
-});
-
-// -----------------------------
-// Serve MJPEG stream
+// Serve MJPEG stream to clients
 // -----------------------------
 app.get("/video", (req, res) => {
   res.writeHead(200, {
@@ -101,10 +72,11 @@ app.get("/video", (req, res) => {
 
   const interval = setInterval(() => {
     if (!globalFrame) return;
+
     res.write(`--frame\r\nContent-Type: image/jpeg\r\n\r\n`);
     res.write(globalFrame);
     res.write("\r\n");
-  }, 50);
+  }, 50); // ~20 FPS
 
   req.on("close", () => clearInterval(interval));
 });
@@ -112,9 +84,7 @@ app.get("/video", (req, res) => {
 // -----------------------------
 // Start Node.js backend
 // -----------------------------
-app.listen(PORT, async () => {
-  console.log(
-    `Node.js MJPEG backend running at http://localhost:${PORT}/video`
-  );
-  //   await loadModel();
+app.listen(PORT, () => {
+  console.log(`✅ Node.js backend running at http://localhost:${PORT}/video`);
+  fetchFlaskFrames();
 });
