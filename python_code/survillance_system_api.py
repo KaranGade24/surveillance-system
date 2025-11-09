@@ -160,6 +160,10 @@ def camera_capture():
                 if frame is None:
                     continue
 
+                # 🩵 FIX: Convert BGRA (4 channels) → BGR (3 channels)
+                if frame.shape[2] == 4:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
                 now = datetime.now()
                 if now.hour != last_hour:
                     video_writer.release()
