@@ -12,7 +12,7 @@ from ultralytics import YOLO
 import signal
 import sys
 from flask_socketio import SocketIO
-from pycloudflared import open_tunnel
+# from pycloudflared import open_tunnel
 import mimetypes
 import shutil # For cleanup_old
 
@@ -481,8 +481,8 @@ if __name__ == "__main__":
         
         try:
             # open_tunnel is non-blocking and returns a tunnel object
-            tunnel = open_tunnel(port=5000)
-            print(f"✅ Cloudflare Tunnel running at: {tunnel.public_url}")
+            # tunnel = open_tunnel(port=5000)
+            print(f"✅ Cloudflare Tunnel running at:")
         except Exception as e:
             print(f"❌ FAILED TO START CLOUDFLARE TUNNEL: {e}")
             print("   (The server will still run locally on port 5000)")
