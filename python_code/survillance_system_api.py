@@ -12,6 +12,7 @@ import signal
 import sys
 from flask_socketio import SocketIO
 import numpy as np
+import base64
 
 # Try importing Picamera2 (for Raspberry Pi)
 try:
@@ -69,7 +70,6 @@ def init_video_writer():
     current_folder = get_output_path()
     filename = f"record_{datetime.now().strftime('%H-%M-%S')}.mp4"
     current_video_path = os.path.join(current_folder, filename)
-    # Ensure dimensions are correct before initializing
     if frame_width == 0 or frame_height == 0:
         print("[Error] Frame dimensions are zero, cannot initialize VideoWriter.")
         return
@@ -100,12 +100,9 @@ def handle_exit(sig, frame):
         if video_writer:
             video_writer.release()
             print("[INFO] Video writer released.")
-        # Check if cap is Picamera2 object (no isOpened) or OpenCV (has isOpened)
         if cap and hasattr(cap, "isOpened") and cap.isOpened():
             cap.release()
             print("[INFO] Camera released.")
-        elif PICAMERA_AVAILABLE:
-            pass
         cv2.destroyAllWindows()
     except Exception as e:
         print(f"[ERROR] Cleanup failed: {e}")
@@ -136,7 +133,7 @@ def process_frame(frame, last_hour):
     return annotated, last_hour
 
 # -----------------------------
-# Camera capture
+# Camera capture + Socket.IO emitter
 # -----------------------------
 def camera_capture():
     global global_frame, video_writer, cap
@@ -149,11 +146,7 @@ def camera_capture():
         config = picam2.create_preview_configuration(main={"size": (frame_width, frame_height), "format": "RGB888"})
         picam2.configure(config)
         picam2.start()
-
-        frame = picam2.capture_array()
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-        time.sleep(2)
+        time.sleep(2)  # allow camera to warm up
 
         while True:
             frame = picam2.capture_array()
@@ -161,10 +154,11 @@ def camera_capture():
                 time.sleep(0.05)
                 continue
             if frame.shape[2] == 4:
-                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
             annotated, last_hour = process_frame(frame, last_hour)
             with frame_lock:
                 global_frame = annotated.copy()
+            emit_frame_socketio(annotated)
             time.sleep(0.05)
     else:
         print("🎦 Using USB/OpenCV camera...")
@@ -184,10 +178,24 @@ def camera_capture():
             annotated, last_hour = process_frame(frame, last_hour)
             with frame_lock:
                 global_frame = annotated.copy()
+            emit_frame_socketio(annotated)
             time.sleep(0.05)
 
 # -----------------------------
-# Flask Streaming
+# Socket.IO frame emitter
+# -----------------------------
+def emit_frame_socketio(frame):
+    try:
+        ret, buffer = cv2.imencode(".jpg", frame)
+        if not ret:
+            return
+        jpg_base64 = base64.b64encode(buffer).decode("utf-8")
+        socketio.emit("frame", {"image": jpg_base64})
+    except Exception as e:
+        print(f"[Error] Emitting frame: {e}")
+
+# -----------------------------
+# MJPEG HTTP streaming (optional)
 # -----------------------------
 @app.route("/video_feed")
 def video_feed():
@@ -202,9 +210,9 @@ def video_feed():
                     time.sleep(0.1)
                     continue
                 ret, buffer = cv2.imencode(".jpg", global_frame)
+                if not ret:
+                    continue
                 frame_bytes = buffer.tobytes()
-            if not ret:
-                continue
             yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
             time.sleep(0.05)
     return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
@@ -221,7 +229,7 @@ if __name__ == "__main__":
     cam_thread.start()
 
     ip = get_ip()
-    print(f"✅ Flask server running at: http://{ip}:5000")
+    print(f"✅ Flask + Socket.IO server running at: http://{ip}:5000")
     try:
         socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
