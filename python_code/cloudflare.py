@@ -1,12 +1,40 @@
-import subprocess, threading, time, re
+import subprocess
+import threading
+import time
+import re
+import shutil
+import shutil
+import os
 
-# Path to your installed cloudflared.exe
-CLOUDFLARED_PATH = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"
+def _which(executable):
+    # Try shutil.which first, then common locations
+    path = shutil.which(executable)
+    if path:
+        return path
+    # common fallback names
+    candidates = [
+        "/usr/local/bin/cloudflared",
+        "/usr/bin/cloudflared",
+        "/snap/bin/cloudflared",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
 
 def start_cloudflare(port=5000, autorest=True):
+    """Start a cloudflared tunnel to the local port and print the public URL.
+
+    This function blocks; use `start_cloudflare_background` to run in a thread.
+    """
     print("🚀 Starting Cloudflare Tunnel... Please wait.")
     print(f"💡 Start your Flask app (e.g., app.run(port={port}))")
-    print(f"Using cloudflared at: {CLOUDFLARED_PATH}")
+
+    CLOUDFLARED_PATH = _which("cloudflared")
+    if not CLOUDFLARED_PATH:
+        print("❌ cloudflared binary not found in PATH or usual locations.")
+        return
 
     while True:
         try:
@@ -14,12 +42,18 @@ def start_cloudflare(port=5000, autorest=True):
                 [CLOUDFLARED_PATH, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True
+                text=True,
+                bufsize=1,
             )
 
             for line in process.stdout:
-                if "trycloudflare.com" in line:
-                    match = re.search(r"https://[^\s]+\.trycloudflare\.com", line)
+                line = line.strip()
+                if not line:
+                    continue
+                print("[cloudflared]", line)
+                # Some versions print the public url in different formats
+                if "trycloudflare.com" in line or "tryflutter.dev" in line or "cfargotunnel" in line:
+                    match = re.search(r"https?://[^\s']+", line)
                     if match:
                         url = match.group(0)
                         print(f"\n🌍 Public URL: {url}")
