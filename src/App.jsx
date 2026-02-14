@@ -6,10 +6,10 @@ import VideoPlayer from "./components/VideoPlayer";
 import Recordings from "./components/Recordings";
 import axios from "axios";
 
-// const BACKEND_URL =
-//   "https://vatican-dressing-many-vegetables.trycloudflare.com"; // ⚠️ replace with actual IP or localhost
+const BACKEND_URL =
+  "https://cherry-bases-antibody-pays.trycloudflare.com"; // ⚠️ replace with actual IP or localhost
 
-const BACKEND_URL = "http://192.168.43.108:5000"; // ⚠️ replace with actual IP or localhost
+// const BACKEND_URL = "http://192.168.43.108:5000"; // ⚠️ replace with actual IP or localhost
 
 
 export default function App() {

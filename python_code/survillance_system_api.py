@@ -1,3 +1,5 @@
+# START_CLOUDFLARE=true PORT=5000 python3 python_code/survillance_system_api.py
+
 print("Starting imports...")
 import cv2
 import os
