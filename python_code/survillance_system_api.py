@@ -15,14 +15,30 @@ import sys
 from flask_socketio import SocketIO
 import numpy as np
 import cloudflare
+from ultralytics import YOLO
+
+
+
+
+
+# YOLO
+print("Loading YOLO model ....")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "fire_detector.pt")
+fire_model = YOLO(MODEL_PATH)
+
+print("YOLO model loaded.")
+
+detections_data = []  # in-memory cache
+
+
 
 # Try importing Picamera2 (for Raspberry Pi)
 try:
     from picamera2 import Picamera2
     PICAMERA_AVAILABLE = True
-    print("✅ Picamera2 found! Using Raspberry Pi camera.")
+    print("âœ… Picamera2 found! Using Raspberry Pi camera.")
 except ImportError:
-    print("⚠️ Picamera2 not found. Falling back to OpenCV camera.")
+    print("âš ï¸ Picamera2 not found. Falling back to OpenCV camera.")
     PICAMERA_AVAILABLE = False
 
 print("Imports completed.")
@@ -72,18 +88,77 @@ def get_output_path():
     os.makedirs(hour_path, exist_ok=True)
     return hour_path
 
+
+
+def load_previous_detections(limit=100):
+    global detections_data
+    detections_data.clear()
+
+    if not os.path.exists(recordings_base):
+        return
+
+    # Walk newest folders first
+    for root, _, files in os.walk(recordings_base):
+        if "detections.json" in files:
+            path = os.path.join(root, "detections.json")
+            try:
+                with open(path, "r") as f:
+                    for line in f:
+                        try:
+                            detections_data.append(json.loads(line))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    # Keep only latest N detections
+    detections_data = detections_data[-limit:]
+    print(f"?? Loaded {len(detections_data)} previous detections")
+
+
+
+
+def fix_mp4_faststart(path):
+    if not path or not os.path.exists(path):
+        return
+    tmp = path.replace(".mp4", "_tmp.mp4")
+    os.system(f'ffmpeg -y -loglevel error -i "{path}" -movflags faststart "{tmp}"')
+    if os.path.exists(tmp):
+        os.replace(tmp, path)
+
+
+TARGET_FPS = 10
+FRAME_INTERVAL = 1.0 / TARGET_FPS
+
+
+
+
+
+
+
+
 def init_video_writer():
     global video_writer, current_video_path, current_folder
+
     current_folder = get_output_path()
     filename = f"record_{datetime.now().strftime('%H-%M-%S')}.mp4"
     current_video_path = os.path.join(current_folder, filename)
-    # Ensure dimensions are correct before initializing
-    if frame_width == 0 or frame_height == 0:
-        print("[Error] Frame dimensions are zero, cannot initialize VideoWriter.")
-        return
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video_writer = cv2.VideoWriter(current_video_path, fourcc, 10.0, (frame_width, frame_height))
-    print(f"🎥 Recording video to: {current_video_path}")
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    video_writer = cv2.VideoWriter(
+        current_video_path,
+        fourcc,
+        TARGET_FPS,
+        (frame_width, frame_height),
+    )
+
+    if not video_writer.isOpened():
+        print("[FATAL] OpenCV VideoWriter failed")
+        video_writer = None
+    else:
+        print(f"?? Recording started: {current_video_path}")
+
+
 
 
 def start_recording():
@@ -100,6 +175,7 @@ def stop_recording():
     if video_writer:
         try:
             video_writer.release()
+            fix_mp4_faststart(current_video_path)
         except Exception:
             pass
         video_writer = None
@@ -115,17 +191,18 @@ def cleanup_old(days=7):
             if (now - folder_date).days > days:
                 import shutil
                 full_path = os.path.join(base_dir, folder)
-                print(f"🧹 Cleaning old folder: {full_path}")
+                print(f"ðŸ§¹ Cleaning old folder: {full_path}")
                 shutil.rmtree(full_path)
         except Exception:
             continue
 
 def handle_exit(sig, frame):
     global cap, video_writer
-    print("\n[INFO] Program interrupted — cleaning up...")
+    print("\n[INFO] Program interrupted â€” cleaning up...")
     try:
         if video_writer:
             video_writer.release()
+            fix_mp4_faststart(current_video_path)
             print("[INFO] Video writer released.")
         # Check if cap is Picamera2 object (no isOpened) or OpenCV (has isOpened)
         if cap and hasattr(cap, "isOpened") and cap.isOpened():
@@ -138,10 +215,42 @@ def handle_exit(sig, frame):
         print(f"[ERROR] Cleanup failed: {e}")
     sys.exit(0)
 
+
+
+
+def save_detection(data):
+    detections_data.append(data)
+
+    if current_folder:
+        path = os.path.join(current_folder, "detections.json")
+        with open(path, "a") as f:
+            json.dump(data, f)
+            f.write("\n")
+
+
+def log_detection(label, conf):
+    now = datetime.now()
+    data = {
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "epoch_time": now.timestamp(),
+        "object": label,
+        "confidence": round(conf, 2),
+        "video_file": current_video_path
+    }
+    socketio.emit("new_detection", data)
+    save_detection(data)
+
+
+
+
+
+
+
+
 # -----------------------------
 # Frame processing
 # -----------------------------
-def process_frame(frame, last_hour):
+'''def process_frame(frame, last_hour):
     global video_writer
     now = datetime.now()
     
@@ -161,6 +270,48 @@ def process_frame(frame, last_hour):
             print(f"[Error] Failed to write frame to video: {e}")
             
     return annotated, last_hour
+'''
+
+def process_frame(frame, last_hour):
+    global video_writer
+    now = datetime.now()
+
+    if now.hour != last_hour:
+        if video_writer:
+            video_writer.release()
+            fix_mp4_faststart(current_video_path)
+        init_video_writer()
+        last_hour = now.hour
+
+    annotated = frame.copy()
+
+    # ?? YOLO FIRE DETECTION (ADDED)
+    results = fire_model.predict(annotated, verbose=False)
+    for r in results:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+            if conf > 0.5:
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                cv2.putText(
+                    annotated,
+                    f"Fire {conf:.2f}",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 0, 255),
+                    2
+                )
+                log_detection("Fire", conf)
+
+    if recording_enabled and video_writer:
+        try:
+            video_writer.write(cv2.resize(annotated, (frame_width, frame_height)))
+        except Exception as e:
+            print(f"[Error] Video write failed: {e}")
+
+    return annotated, last_hour
+
 
 # -----------------------------
 # Camera capture
@@ -171,7 +322,7 @@ def camera_capture():
     last_hour = datetime.now().hour
 
     if PICAMERA_AVAILABLE:
-        print("📸 Using PiCamera2...")
+        print("ðŸ“¸ Using PiCamera2...")
         picam2 = Picamera2()
         config = picam2.create_preview_configuration(main={"size": (frame_width, frame_height), "format": "RGB888"})
         picam2.configure(config)
@@ -182,7 +333,7 @@ def camera_capture():
 
         time.sleep(2)
 
-        while not camera_stop_event.is_set():
+        '''while not camera_stop_event.is_set():
             frame = picam2.capture_array()
             if frame is None:
                 time.sleep(0.05)
@@ -192,15 +343,38 @@ def camera_capture():
             annotated, last_hour = process_frame(frame, last_hour)
             with frame_lock:
                 global_frame = annotated.copy()
-            time.sleep(0.05)
+            time.sleep(0.05)'''
+
+        next_frame_time = time.time()
+
+        while not camera_stop_event.is_set():
+            frame = picam2.capture_array()
+            if frame is None:
+                continue
+
+            if frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+            annotated, last_hour = process_frame(frame, last_hour)
+
+            with frame_lock:
+                global_frame = annotated.copy()
+
+            # ? FPS control (THIS IS THE FIX)
+            next_frame_time += FRAME_INTERVAL
+            sleep_time = next_frame_time - time.time()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+
     else:
-        print("🎦 Using USB/OpenCV camera...")
+        print("ðŸŽ¦ Using USB/OpenCV camera...")
         cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
         
         if not cap.isOpened():
-            print("❌ Error: Cannot open camera.")
+            print("âŒ Error: Cannot open camera.")
             return
             
         while not camera_stop_event.is_set():
@@ -256,19 +430,64 @@ def _safe_recording_path(relative_path: str):
     return candidate
 
 
+
+
+@app.route("/detections")
+def get_detections():
+    return jsonify(list(reversed(detections_data[-100:])))
+
+
+
 @app.route("/recordings")
 def list_recordings():
-    files = []
-    base = recordings_base
-    if not os.path.exists(base):
-        return jsonify([])
-    for root, _, filenames in os.walk(base):
-        for f in filenames:
-            full = os.path.join(root, f)
-            rel = os.path.relpath(full, base)
-            files.append(rel.replace('\\\\', '/'))
-    files.sort(reverse=True)
-    return jsonify(files)
+    base_dir = recordings_base
+    tree = []
+
+    if not os.path.exists(base_dir):
+        return jsonify(tree)
+
+    for date in sorted(os.listdir(base_dir), reverse=True):
+        date_path = os.path.join(base_dir, date)
+        if not os.path.isdir(date_path):
+            continue
+
+        hours = []
+        for hour in sorted(os.listdir(date_path), reverse=True):
+            hour_path = os.path.join(date_path, hour)
+            if not os.path.isdir(hour_path):
+                continue
+
+            files = []
+            for f in sorted(os.listdir(hour_path)):
+                if not f.lower().endswith(".mp4"):
+                    continue
+
+                full = os.path.join(hour_path, f)
+                stat = os.stat(full)
+                rel_path = os.path.relpath(full, base_dir).replace("\\", "/")
+
+                files.append({
+                    "name": f,
+                    "path": rel_path,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "url": f"recording/{rel_path}",
+                    "mtype": "video/mp4"
+                })
+
+            if files:
+                hours.append({
+                    "hour": hour,
+                    "files": files
+                })
+
+        if hours:
+            tree.append({
+                "date": date,
+                "hours": hours
+            })
+
+    return jsonify(tree)
 
 
 def stream_video_file(path):
@@ -294,13 +513,58 @@ def stream_video_file(path):
             pass
 
 
-@app.route("/recordings/stream")
-def recordings_stream():
-    rel = request.args.get('file')
-    safe = _safe_recording_path(rel)
-    if not safe or not os.path.exists(safe):
-        return jsonify({"error": "file not found"}), 404
-    return Response(stream_video_file(safe), mimetype="multipart/x-mixed-replace; boundary=frame")
+@app.route("/recording/<path:filename>", methods=["GET", "HEAD"])
+def static_recordings(filename):
+    safe_path = _safe_recording_path(filename)
+    if not safe_path or not os.path.exists(safe_path):
+        return jsonify({"error": "File not found"}), 404
+
+    file_size = os.path.getsize(safe_path)
+    range_header = request.headers.get("Range")
+
+    # --------
+    # HEAD request (important for browsers)
+    # --------
+    if request.method == "HEAD":
+        resp = Response(status=200)
+        resp.headers["Content-Type"] = "video/mp4"
+        resp.headers["Content-Length"] = file_size
+        resp.headers["Accept-Ranges"] = "bytes"
+        return resp
+
+    # --------
+    # No Range ? return full file
+    # --------
+    if not range_header:
+        return send_file(
+            safe_path,
+            mimetype="video/mp4",
+            conditional=True  # enables range support fallback
+        )
+
+    # --------
+    # Range request
+    # --------
+    byte1, byte2 = 0, None
+    m = range_header.replace("bytes=", "").split("-")
+    if m[0]:
+        byte1 = int(m[0])
+    if len(m) > 1 and m[1]:
+        byte2 = int(m[1])
+
+    byte2 = byte2 if byte2 is not None else file_size - 1
+    length = byte2 - byte1 + 1
+
+    with open(safe_path, "rb") as f:
+        f.seek(byte1)
+        data = f.read(length)
+
+    resp = Response(data, 206, mimetype="video/mp4", direct_passthrough=True)
+    resp.headers["Content-Range"] = f"bytes {byte1}-{byte2}/{file_size}"
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Content-Length"] = length
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
 
 
 @app.route("/recordings/download")
@@ -349,6 +613,9 @@ def api_stop_camera():
 # -----------------------------
 if __name__ == "__main__":
     cleanup_old(7)
+
+    load_previous_detections(limit=100)
+
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
@@ -369,8 +636,15 @@ if __name__ == "__main__":
             print(f"[WARN] Failed to start cloudflare background: {e}")
 
     ip = get_ip()
-    print(f"✅ Flask server running at: http://{ip}:{port}")
+    print(f"âœ… Flask server running at: http://{ip}:{port}")
     try:
         socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
         handle_exit(None, None)
+
+
+
+
+
+
+
