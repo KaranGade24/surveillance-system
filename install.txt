@@ -1,0 +1,101 @@
+
+---
+
+# 🧾 INSTALL COMMANDS (Raspberry Pi OS – ARM64)
+
+---
+
+## 1️⃣ System update
+
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+
+---
+
+## 2️⃣ Install system (APT) dependencies
+
+```bash
+sudo apt install -y \
+    python3-pip \
+    python3-opencv \
+    python3-numpy \
+    python3-torch \
+    python3-torchvision \
+    python3-picamera2 \
+    ffmpeg \
+    libatlas-base-dev \
+    libopenblas-dev \
+    liblapack-dev
+```
+
+---
+
+## 3️⃣ Create `requirements.txt`
+
+```bash
+cat <<EOF > requirements.txt
+flask
+flask-cors
+flask-socketio
+requests
+numpy
+cloudflare
+ultralytics
+EOF
+```
+
+---
+
+## 4️⃣ Install Python packages (IMPORTANT)
+
+```bash
+pip install -r requirements.txt --no-deps --break-system-packages
+```
+
+---
+
+## 5️⃣ Verify installation
+
+```bash
+python3 - <<EOF
+import torch
+import torchvision
+import cv2
+from ultralytics import YOLO
+print("Torch:", torch.__version__)
+print("Torchvision:", torchvision.__version__)
+print("OpenCV:", cv2.__version__)
+print("YOLO OK")
+EOF
+```
+
+---
+
+## 6️⃣ Run application
+
+```bash
+START_CLOUDFLARE=true PORT=5000 python3 python_code/survillance_system_api.py
+```
+
+---
+
+## 🔁 Reinstall (if needed)
+
+```bash
+pip uninstall -y ultralytics torch torchvision
+sudo apt install --reinstall python3-torch python3-torchvision
+pip install ultralytics --no-deps --break-system-packages
+```
+
+---
+
+
+
+
+sudo apt install -y \
+  gstreamer1.0-tools \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav
